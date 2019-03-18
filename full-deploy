@@ -1,0 +1,245 @@
+#!/bin/zsh
+
+
+
+###### Immediatley step on the gas #######
+
+apt update 
+apt -y upgrade
+apt -y install apache2 php7.2 php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql
+mkdir -p /var/www/{backups,vhosts/trial.com/{httpdocs,logs,moodledata}}
+git clone -b MOODLE_36_STABLE git://git.moodle.org/moodle.git /var/www/vhosts/trial.com/httpdocs/
+touch /etc/apache2/sites-available/trial.com.conf
+cat >/etc/apache2/sites-available/trial.com.conf <<EOL
+<VirtualHost *:80>
+ServerName trial.com
+ServerAlias trial.com
+
+ServerAdmin root@localhost.com
+DocumentRoot /var/www/vhosts/trial.com/httpdocs
+
+ErrorLog /var/www/vhosts/trial.com/logs/error.log
+CustomLog /var/www/vhosts/trial.com/logs/access.log combined
+
+
+</VirtualHost>
+EOL
+cat >/var/www/vhosts/trial.com/httpdocs/config.php <<EOL
+<?php  // Moodle configuration file
+
+unset(\$CFG);
+global \$CFG;
+\$CFG = new stdClass();
+
+\$CFG->dbtype    = 'pgsql';
+\$CFG->dblibrary = 'native';
+\$CFG->dbhost    = 'localhost';
+\$CFG->dbname    = 'trial';
+\$CFG->dbuser    = 'trial';
+\$CFG->dbpass    = 'SuperSecretPassword123';
+\$CFG->prefix    = 'mdl_';
+\$CFG->dboptions = array (
+  'dbpersist' => 0,
+  'dbport' => '',
+  'dbsocket' => '',
+);
+
+\$CFG->wwwroot   = 'http://trial.com';
+\$CFG->dataroot  = '/var/www/vhosts/trial.com/moodledata';
+\$CFG->admin     = 'admin';
+
+\$CFG->directorypermissions = 0777;
+
+require_once(__DIR__ . '/lib/setup.php');
+
+// There is no php closing tag in this file,
+// it is intentional because it prevents trailing whitespace problems!
+EOL
+cat >/tmp/user.sql <<EOL
+CREATE USER trial WITH PASSWORD 'SuperSecretPassword123';
+CREATE DATABASE trial OWNER trial; 
+EOL
+sudo -u postgres psql < /tmp/user.sql
+chown -R www-data: /var/www/vhosts/trial.com/
+chmod -R 775 /var/www/vhosts/trial.com/
+a2ensite trial.com
+systemctl restart apache2
+ufw allow http
+sudo -u www-data php /var/www/vhosts/trial.com/httpdocs/admin/cli/install_database.php --agree-license --adminuser=admin --adminpass=supersecretpassworD!23 --adminemail=someone@live.co.uk
+rm /tmp/user.sql
+
+echo '##### Creating Benchmarking db #####'
+
+sudo -u postgres createdb unbench_the_kench  >/dev/null 2>&1
+
+echo ' '
+echo '##### Filling table with junk #####'
+sudo -u postgres pgbench -i  -s 10 -p 5432 -d unbench_the_kench
+
+echo '###### Running benchmark against default tuning  #######'
+ab -k -c 50 -n 200 trial.com/ >> result2.txt & 
+for i in {1..15}
+do
+sudo -u postgres pgbench unbench_the_kench -c 50 -T 3 -S -n >> result1.txt 
+done
+grep -i processed result1.txt | awk '{printf "%s\n", $6}' > result_nums.txt
+grep -i "Time per request" result2.txt | awk '{printf "%s\n", $3}' >results2_nums.txt
+count=0;
+sum=0;
+
+for i in $( awk '{printf "%s\n", $1}' result_nums.txt )
+   do
+     sum=$(echo $sum+$i | bc )
+     ((count++))
+   done
+   default_tuning=$(echo 'Average number of transactions processed from 15 iterations ' && echo "scale=2; $sum / $count" | bc)
+count2=0;
+sum2=0;
+
+for i in $( awk '{printf "%s\n", $1}' results2_nums.txt)
+   do
+     sum2=$(echo $sum2+$i | bc )
+     ((count2++))
+   done
+   default_apache=$(echo 'Average time per request over 15 iterations' && echo "scale=2; $sum2 / $count2" | bc)
+
+echo ' '
+echo '##### Clean Up #####'
+rm result1.txt result_nums.txt results2_num.txt result2.txt 
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+
+#Define settings
+
+total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+shared_buffers=$(echo $total '/ 4' | bc)
+work_mem=$(echo $total '/ 2 / (100 * 5)' | bc)
+maintanence_work_mem=$(echo $shared_buffers '/ 3' | bc)
+checkpoint_completion_target='0.9'
+checkpoint_timeout='20min'
+autovacuum_freeze_max_age='100000000'
+autovacuum_multixact_freeze_max_age='100000000'
+vacuum_cost_limit='600'
+
+#Work out hdd or ssd
+hdd_or_ssd=$(cat /sys/block/nvme0n1/queue/rotational)
+if (($hdd_or_ssd  == 1))
+then
+        random_page_cost='3'
+else
+        random_page_cost='1.1'
+        fi
+effective_cache=$(echo  $total ' * 0.75 ' | bc)
+effective_cache_size=$(printf "%.0f\n" "$effective_cache")
+effective_io_concurrency=200
+
+
+##Setting up the config file
+
+touch /etc/postgresql/10/main/magic_tuner.conf
+cat >/etc/postgresql/10/main/magic_tuner.conf <<EOL
+######################################
+##### Ned's magic tuner settings #####
+######################################
+default_statistics_target = 100
+max_connections = 200
+shared_buffers=${shared_buffers}kB
+work_mem=${work_mem}kB
+maintenance_work_mem=${maintanence_work_mem}kB
+checkpoint_completion_target=$checkpoint_completion_target
+checkpoint_timeout=$checkpoint_timeout
+#autovacuum_freeze_max_age=$autovacuum_freeze_age
+#autovacuum_multixact_freeze_max_age=$autovacuum_multixact_freeze_max_age
+vacuum_cost_limit=$vacuum_cost_limit
+random_page_cost=$random_page_cost
+effective_cache_size=${effective_cache_size}kB 
+effective_io_concurrency=$effective_io_concurrency
+max_worker_processes = 4
+max_parallel_workers_per_gather = 2
+max_parallel_workers = 4
+EOL
+
+echo '##### Applying new settings #####'
+echo ' '
+cat /etc/postgresql/10/main/magic_tuner.conf
+echo '##### Including config file in postgresql #####'
+echo  "include = 'magic_tuner.conf'" >> /etc/postgresql/10/main/postgresql.conf
+
+echo ' '
+echo '###### Restarting postgres with new settings #####'
+echo ' '
+systemctl restart postgresql
+echo '##### Running benchmark against magic tuner  #####'
+echo ' '
+echo '##### Creating Database #####'
+echo ' '
+sudo -u postgres createdb  unbench_the_kench >/dev/null 2>&1
+echo '##### Filling Database with junk ######'
+echo ' '
+sudo -u postgres pgbench -i -s 10  -p 5432 -d unbench_the_kench
+
+echo '##### Running benchmark against magic-tuner #####'
+for i in {1..15}
+do
+sudo -u postgres pgbench unbench_the_kench  -c 50 -T 3 -S -n > result3.txt &
+ab -k -c 50 -n 200 trial.com/ >> result4.txt
+done
+
+grep -i processed result3.txt | awk '{printf "%s\n", $6}' > result_nums3.txt
+
+count3=0;
+sum3=0;
+
+for i in $( awk '{ printf "%s\n", $1 }' result_nums3.txt )
+   do
+     sum3=$(echo $sum3+$i | bc )
+     ((count3++))
+   done
+   neds_tuning=$(echo 'Average number of transactions processed from 15 iterations '&& echo "scale=2; $sum3 / $count3" | bc)
+
+count4=0;
+sum4=0;
+grep -i processed result4.txt | awk '{printf "%s\n", $6}' > result_nums4.txt
+
+for i in $( awk '{printf "%s\n", $1}' results4_nums.txt)
+   do
+     sum4=$(echo $sum4+$i | bc )
+     ((count4++))
+   done
+   default_apache=$(echo 'Average time per request over 15 iterations' && echo "scale=2; $sum4 / $count4" | bc)
+
+echo '##### Cleaning up #####'
+echo ' '
+
+rm result4.txt result_nums4.txt
+
+rm /etc/postgresql/10/main/magic_tuner.conf
+sed -i '$d' /etc/postgresql/10/main/postgresql.conf
+
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+
+rm -rf /var/www/vhosts/trial.com
+rm -f /etc/apache/sites-enabled/trial.com.conf
+rm -f /etc/apache/sites-available/trial.com.com
+cat >/tmp/remove.sql <<EOL
+DROP DATABASE trial;
+DROP USER trial
+EOL
+sudo -u postgres psql < /tmp/remove.sql
+rm /tmp/remove.sql
+apt -y remove apache2 php7.2 php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql
+
+cat << EOF 
+#############################
+###### Results of tuning #####
+##############################
+
+Default tuning results
+${default_tuning}
+
+Default apache  tuning results
+${default_apache}
+
+##### Neds tuning results #####
+${neds_tuning}
+EOF
+
