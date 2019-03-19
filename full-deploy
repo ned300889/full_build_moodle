@@ -3,30 +3,41 @@
 
 
 ###### Immediatley step on the gas #######
+echo 'What is the name of your website (please include .com)'
+
+read website
+
+echo 'What is the name of the database you want to use'
+
+read database
+
+moodlepass=$(openssl rand -base64 16)
+dbpass=$(openssl rand -base64 16)
 
 wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
 sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -sc)-pgdg main" > /etc/apt/sources.list.d/PostgreSQL.list'
 apt update 
 apt -y upgrade
-apt -y install apache2 php7.2 php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10
-mkdir -p /var/www/{backups,vhosts/trial.com/{httpdocs,logs,moodledata}}
-git clone -b MOODLE_36_STABLE git://git.moodle.org/moodle.git /var/www/vhosts/trial.com/httpdocs/
-touch /etc/apache2/sites-available/trial.com.conf
-cat >/etc/apache2/sites-available/trial.com.conf <<EOL
+apt -y install apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10
+mkdir -p /var/www/{backups,vhosts/$website/{httpdocs,logs,moodledata}}
+git clone -b MOODLE_36_STABLE git://git.moodle.org/moodle.git /var/www/vhosts/$website/httpdocs/
+systemctl start postgresql
+touch /etc/apache2/sites-available/$website.conf
+cat >/etc/apache2/sites-available/$website.conf <<EOL
 <VirtualHost *:80>
-ServerName trial.com
-ServerAlias trial.com
+ServerName ${website}
+ServerAlias ${website}
 
 ServerAdmin root@localhost.com
-DocumentRoot /var/www/vhosts/trial.com/httpdocs
+DocumentRoot /var/www/vhosts/${website}/httpdocs
 
-ErrorLog /var/www/vhosts/trial.com/logs/error.log
-CustomLog /var/www/vhosts/trial.com/logs/access.log combined
+ErrorLog /var/www/vhosts/${website}/logs/error.log
+CustomLog /var/www/vhosts/${website}/logs/access.log combined
 
 
 </VirtualHost>
 EOL
-cat >/var/www/vhosts/trial.com/httpdocs/config.php <<EOL
+cat >/var/www/vhosts/$website/httpdocs/config.php <<EOL
 <?php  // Moodle configuration file
 
 unset(\$CFG);
@@ -36,9 +47,9 @@ global \$CFG;
 \$CFG->dbtype    = 'pgsql';
 \$CFG->dblibrary = 'native';
 \$CFG->dbhost    = 'localhost';
-\$CFG->dbname    = 'trial';
-\$CFG->dbuser    = 'trial';
-\$CFG->dbpass    = 'SuperSecretPassword123';
+\$CFG->dbname    = '${database}';
+\$CFG->dbuser    = '${database}';
+\$CFG->dbpass    = '${dbpass}';
 \$CFG->prefix    = 'mdl_';
 \$CFG->dboptions = array (
   'dbpersist' => 0,
@@ -46,8 +57,8 @@ global \$CFG;
   'dbsocket' => '',
 );
 
-\$CFG->wwwroot   = 'http://trial.com';
-\$CFG->dataroot  = '/var/www/vhosts/trial.com/moodledata';
+\$CFG->wwwroot   = 'http://${website}';
+\$CFG->dataroot  = '/var/www/vhosts/${website}/moodledata';
 \$CFG->admin     = 'admin';
 
 \$CFG->directorypermissions = 0777;
@@ -58,14 +69,25 @@ require_once(__DIR__ . '/lib/setup.php');
 // it is intentional because it prevents trailing whitespace problems!
 EOL
 cat >/tmp/user.sql <<EOL
-CREATE USER trial WITH PASSWORD 'SuperSecretPassword123';
-CREATE DATABASE trial OWNER trial; 
+CREATE USER ${database} WITH PASSWORD '${dbpass}';
+CREATE DATABASE ${database} OWNER ${database}; 
 EOL
 sudo -u postgres psql < /tmp/user.sql
-chown -R www-data: /var/www/vhosts/trial.com/
-chmod -R 775 /var/www/vhosts/trial.com/
-a2ensite trial.com
+chown -R www-data: /var/www/vhosts/${website}/
+chmod -R 775 /var/www/vhosts/${website}/
+a2ensite ${website}
 systemctl restart apache2
 ufw allow http
-sudo -u www-data php /var/www/vhosts/trial.com/httpdocs/admin/cli/install_database.php --agree-license --adminuser=admin --adminpass=supersecretpassworD!23 --adminemail=someone@live.co.uk
+sudo -u www-data php /var/www/vhosts/$website/httpdocs/admin/cli/install_database.php --agree-license --adminuser=admin --adminpass=$moodlepass --adminemail=someone@live.co.uk
 rm /tmp/user.sql
+
+
+cat <<EOF
+
+###### Store these in a safe place they will dissapear after this ######
+
+
+Database password is  ${dbpass}
+Moodle admin account password is  ${moodlepass}
+
+EOF
