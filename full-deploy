@@ -14,11 +14,12 @@ read database
 moodlepass=$(openssl rand -base64 16)
 dbpass=$(openssl rand -base64 16)
 
+add-apt-repository ppa:certbot/certbot
 wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
 sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -sc)-pgdg main" > /etc/apt/sources.list.d/PostgreSQL.list'
 apt update 
 apt -y upgrade
-apt -y install apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10
+apt -y install apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10 python-certbot-apache
 mkdir -p /var/www/{backups,vhosts/$website/{httpdocs,logs,moodledata}}
 git clone -b MOODLE_36_STABLE git://git.moodle.org/moodle.git /var/www/vhosts/$website/httpdocs/
 systemctl start postgresql
@@ -77,9 +78,47 @@ chown -R www-data: /var/www/vhosts/${website}/
 chmod -R 775 /var/www/vhosts/${website}/
 a2ensite ${website}
 systemctl restart apache2
-ufw allow http
+ufw allow 'Apache Full'
 sudo -u www-data php /var/www/vhosts/$website/httpdocs/admin/cli/install_database.php --agree-license --adminuser=admin --adminpass=$moodlepass --adminemail=someone@live.co.uk
 rm /tmp/user.sql
+#sudo certbot --apache -d $website -d www.$website
+sudo apt install php7.2-opcache
+sudo phpenmod opcache
+# Enable the opcache.
+SEARCH=";opcache.enable=0"
+REPLACE="opcache.enable=1"
+FILEPATH="/etc/php/7.2/cli/php.ini"
+sed -i "s:$SEARCH:$REPLACE:" $FILEPATH
+
+# Enable opcache for the cli
+SEARCH=";opcache.enable_cli=0"
+REPLACE="opcache.enable_cli=1"
+FILEPATH="/etc/php/7.2/cli/php.ini"
+sed -i "s:$SEARCH:$REPLACE:" $FILEPATH
+
+
+# Set the amount of memory we can use for caching.
+# The production server has oooooodles of RAM.
+SEARCH=";opcache.memory_consumption=64"
+REPLACE="opcache.memory_consumption=64"
+FILEPATH="/etc/php/7.2/cli/php.ini"
+sed -i "s:$SEARCH:$REPLACE:" $FILEPATH
+
+
+# increase the number of files to cache
+SEARCH=";opcache.max_accelerated_files=2000"
+REPLACE="opcache.max_accelerated_files=1000000"
+FILEPATH="/etc/php/7.2/cli/php.ini"
+sed -i "s:$SEARCH:$REPLACE:" $FILEPATH
+
+
+# Don't bother revalidating files for a long time because
+# they should never change.
+# Obviously you need to undo this in dev.
+SEARCH=";opcache.validate_timestamps=1"
+REPLACE="opcache.validate_timestamps=3000"
+FILEPATH="/etc/php/7.2/cli/php.ini"
+sed -i "s:$SEARCH:$REPLACE:" $FILEPATH
 
 
 cat <<EOF

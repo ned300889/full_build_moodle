@@ -1,0 +1,13 @@
+#!/bin/zsh
+
+cat >/tmp/remove.sql <<EOL
+DROP DATABASE trial;
+DROP USER trial
+EOL
+rm -f /etc/apache2/sites-enabled/trial.com.conf
+rm -f /etc/apache2/sites-available/trial.com.conf
+rm -rf /var/www/vhosts/trial.com
+sudo -u postgres psql < /tmp/remove.sql
+rm /tmp/remove.sql
+apt -y  remove --purge  apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10 
+apt -y autoremove
