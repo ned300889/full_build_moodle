@@ -1,0 +1,255 @@
+rm /tmp/user.sql
+
+echo '##### Creating Benchmarking db #####'
+
+sudo -u postgres createdb unbench_the_kench  >/dev/null 2>&1
+
+echo ' '
+echo '##### Filling table with junk #####'
+sudo -u postgres pgbench -i  -s 10 -p 5432 -d unbench_the_kench
+
+echo '###### Running benchmark against default tuning  #######'
+ab -k -c 50 -n 200 trial.com/ >> result2.txt & 
+for i in {1..5}
+do
+sudo -u postgres pgbench unbench_the_kench -c 50 -T 3 -S -n >> result1.txt 
+done
+grep -i processed result1.txt | awk '{printf "%s\n", $6}' > result_nums.txt
+grep -i "Time per request" result2.txt | awk '{printf "%s\n", $3}' >results2_nums.txt
+count=0;
+sum=0;
+
+for i in $( awk '{printf "%s\n", $1}' result_nums.txt )
+   do
+     sum=$(echo $sum+$i | bc )
+     ((count++))
+   done
+   default_tuning=$(echo 'Average number of transactions processed from 15 iterations ' && echo "scale=2; $sum / $count" | bc)
+count2=0;
+sum2=0;
+
+for i in $( awk '{printf "%s\n", $1}' results2_nums.txt)
+   do
+     sum2=$(echo $sum2+$i | bc )
+     ((count2++))
+   done
+   default_apache=$(echo 'Average time per request over 15 iterations' && echo "scale=2; $sum2 / $count2" | bc)
+
+echo ' '
+echo '##### Clean Up #####'
+rm result1.txt result_nums.txt results2_num.txt result2.txt 
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+
+#Define settings
+
+total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+shared_buffers=$(echo $total '/ 4' | bc)
+work_mem=$(echo $total '/ 2 / (100 * 5)' | bc)
+maintanence_work_mem=$(echo $shared_buffers '/ 3' | bc)
+checkpoint_completion_target='0.9'
+checkpoint_timeout='20min'
+autovacuum_freeze_max_age='100000000'
+autovacuum_multixact_freeze_max_age='100000000'
+vacuum_cost_limit='600'
+
+#Work out hdd or ssd
+hdd_or_ssd=$(cat /sys/block/nvme0n1/queue/rotational)
+if (($hdd_or_ssd  == 1))
+then
+        random_page_cost='3'
+else
+        random_page_cost='1.1'
+        fi
+effective_cache=$(echo  $total ' * 0.90 ' | bc)
+effective_cache_size=$(printf "%.0f\n" "$effective_cache")
+effective_io_concurrency=200
+
+
+##Setting up the config file
+
+touch /etc/postgresql/10/main/magic_tuner.conf
+cat >/etc/postgresql/10/main/magic_tuner.conf <<EOL
+######################################
+##### Ned's magic tuner settings #####
+######################################
+default_statistics_target = 100
+max_connections = 200
+shared_buffers=${shared_buffers}kB
+work_mem=${work_mem}kB
+maintenance_work_mem=${maintanence_work_mem}kB
+checkpoint_completion_target=$checkpoint_completion_target
+checkpoint_timeout=$checkpoint_timeout
+#autovacuum_freeze_max_age=$autovacuum_freeze_age
+#autovacuum_multixact_freeze_max_age=$autovacuum_multixact_freeze_max_age
+vacuum_cost_limit=$vacuum_cost_limit
+random_page_cost=$random_page_cost
+effective_cache_size=${effective_cache_size}kB 
+effective_io_concurrency=$effective_io_concurrency
+max_worker_processes = 4
+max_parallel_workers_per_gather = 2
+max_parallel_workers = 4
+EOL
+
+echo '##### Applying new settings #####'
+echo ' '
+cat /etc/postgresql/10/main/magic_tuner.conf
+echo '##### Including config file in postgresql #####'
+echo  "include = 'magic_tuner.conf'" >> /etc/postgresql/10/main/postgresql.conf
+
+echo ' '
+echo '###### Restarting postgres with new settings #####'
+echo ' '
+systemctl restart postgresql
+echo '##### Running benchmark against magic tuner  #####'
+echo ' '
+echo '##### Creating Database #####'
+echo ' '
+sudo -u postgres createdb  unbench_the_kench >/dev/null 2>&1
+echo '##### Filling Database with junk ######'
+echo ' '
+sudo -u postgres pgbench -i -s 10  -p 5432 -d unbench_the_kench
+
+echo '##### Running benchmark against magic-tuner #####'
+for i in {1..5}
+do
+sudo -u postgres pgbench unbench_the_kench  -c 50 -T 3 -S -n > result3.txt &
+ab -k -c 50 -n 200 trial.com/ >> result4.txt
+done
+
+grep -i processed result3.txt | awk '{printf "%s\n", $6}' > result_nums3.txt
+
+count3=0;
+sum3=0;
+
+for i in $( awk '{ printf "%s\n", $1 }' result_nums3.txt )
+   do
+     sum3=$(echo $sum3+$i | bc )
+     ((count3++))
+   done
+   neds_tuning=$(echo 'Average number of transactions processed from 15 iterations '&& echo "scale=2; $sum3 / $count3" | bc)
+
+count4=0;
+sum4=0;
+grep -i processed result4.txt | awk '{printf "%s\n", $6}' > result_nums4.txt
+
+for i in $( awk '{printf "%s\n", $1}' results4_nums.txt)
+   do
+     sum4=$(echo $sum4+$i | bc )
+     ((count4++))
+   done
+   default_apache=$(echo 'Average time per request over 15 iterations' && echo "scale=2; $sum4 / $count4" | bc)
+
+echo '##### Cleaning up #####'
+echo ' '
+
+rm result*
+
+rm /etc/postgresql/10/main/magic_tuner.conf
+sed -i '$d' /etc/postgresql/10/main/postgresql.conf
+
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+
+
+touch /etc/postgresql/10/main/pg_tune.conf
+cat >/etc/postgresql/10/main/pg_tune.conf <<EOL                      
+##### Pg Tuner settings######
+# DB Version: 11
+# OS Type: linux
+# DB Type: web
+# Total Memory (RAM): 16 GB
+# CPUs num: 4
+# Connections num: 200
+# Data Storage: ssd
+
+max_connections = 200
+shared_buffers = 4GB
+effective_cache_size = 12GB
+maintenance_work_mem = 1GB
+checkpoint_completion_target = 0.7
+wal_buffers = 16MB
+default_statistics_target = 100
+random_page_cost = 1.1
+effective_io_concurrency = 200
+work_mem = 10485kB
+min_wal_size = 1GB
+max_wal_size = 2GB
+max_worker_processes = 4
+max_parallel_workers_per_gather = 2
+max_parallel_workers = 4
+EOL
+
+echo '##### Applying new settings #####'
+echo ' '
+cat /etc/postgresql/10/main/pg_tune.conf
+echo '##### Including config file in postgresql #####'
+
+
+echo  "include = 'pg_tune.conf'" >> /etc/postgresql/10/main/postgresql.conf
+echo ' '
+echo '###### Restarting postgres with new settings #####'
+echo ' '
+systemctl restart postgresql
+
+echo '##### Creating Database #####'
+echo ' '
+sudo -u postgres createdb unbench_the_kench >/dev/null 2>&1
+echo '##### Filling the database with junk #####'
+echo ' '
+sudo -u postgres pgbench -i -s 10 -p 5432 -d unbench_the_kench
+echo '##### Running benchmark against PG_tune #####'
+
+for i in {1..5}
+do
+sudo -u postgres pgbench unbench_the_kench -c 100 -T 3 -S -n >> result2.txt
+done
+
+grep -i processed result2.txt | awk '{printf "%s\n", $6}' > result_nums2.txt
+
+count2=0;
+sum2=0;
+
+for i in $( awk '{ printf "%s\n", $1 }' result_nums2.txt )
+           do
+                sum2=$(echo $sum2+$i | bc )
+                ((count2++))
+       done
+pg_bench=$(echo 'Average number of transactions processed from 15 iterations '&& echo "scale=2; $sum2 / $count2" | bc)
+
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+rm result2.txt result_nums2.txt
+rm /etc/postgresql/10/main/pg_tune.conf
+sed -i '$d' /etc/postgresql/10/main/postgresql.conf
+systemctl restart postgresql
+
+
+
+
+rm -rf /var/www/vhosts/trial.com
+rm -f /etc/apache/sites-enabled/trial.com.conf
+rm -f /etc/apache/sites-available/trial.com.com
+cat >/tmp/remove.sql <<EOL
+DROP DATABASE trial;
+DROP USER trial
+EOL
+sudo -u postgres psql < /tmp/remove.sql
+rm /tmp/remove.sql
+apt -y remove apache2 php7.2 php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql
+
+cat << EOF 
+#############################
+###### Results of tuning #####
+##############################
+
+Default tuning results
+${default_tuning}
+
+Default apache  tuning results
+${default_apache}
+
+##### Neds tuning results #####
+${neds_tuning}
+
+##### PG TUNE results #####
+${pg_bench}
+
+EOF
