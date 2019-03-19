@@ -78,7 +78,7 @@ sudo -u postgres pgbench -i  -s 10 -p 5432 -d unbench_the_kench
 
 echo '###### Running benchmark against default tuning  #######'
 ab -k -c 50 -n 200 trial.com/ >> result2.txt & 
-for i in {1..15}
+for i in {1..5}
 do
 sudo -u postgres pgbench unbench_the_kench -c 50 -T 3 -S -n >> result1.txt 
 done
@@ -128,7 +128,7 @@ then
 else
         random_page_cost='1.1'
         fi
-effective_cache=$(echo  $total ' * 0.75 ' | bc)
+effective_cache=$(echo  $total ' * 0.90 ' | bc)
 effective_cache_size=$(printf "%.0f\n" "$effective_cache")
 effective_io_concurrency=200
 
@@ -178,7 +178,7 @@ echo ' '
 sudo -u postgres pgbench -i -s 10  -p 5432 -d unbench_the_kench
 
 echo '##### Running benchmark against magic-tuner #####'
-for i in {1..15}
+for i in {1..5}
 do
 sudo -u postgres pgbench unbench_the_kench  -c 50 -T 3 -S -n > result3.txt &
 ab -k -c 50 -n 200 trial.com/ >> result4.txt
@@ -210,12 +210,87 @@ for i in $( awk '{printf "%s\n", $1}' results4_nums.txt)
 echo '##### Cleaning up #####'
 echo ' '
 
-rm result4.txt result_nums4.txt
+rm result*
 
 rm /etc/postgresql/10/main/magic_tuner.conf
 sed -i '$d' /etc/postgresql/10/main/postgresql.conf
 
 sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+
+
+touch /etc/postgresql/10/main/pg_tune.conf
+cat >/etc/postgresql/10/main/pg_tune.conf <<EOL                      
+##### Pg Tuner settings######
+# DB Version: 11
+# OS Type: linux
+# DB Type: web
+# Total Memory (RAM): 16 GB
+# CPUs num: 4
+# Connections num: 200
+# Data Storage: ssd
+
+max_connections = 200
+shared_buffers = 4GB
+effective_cache_size = 12GB
+maintenance_work_mem = 1GB
+checkpoint_completion_target = 0.7
+wal_buffers = 16MB
+default_statistics_target = 100
+random_page_cost = 1.1
+effective_io_concurrency = 200
+work_mem = 10485kB
+min_wal_size = 1GB
+max_wal_size = 2GB
+max_worker_processes = 4
+max_parallel_workers_per_gather = 2
+max_parallel_workers = 4
+EOL
+
+echo '##### Applying new settings #####'
+echo ' '
+cat /etc/postgresql/10/main/pg_tune.conf
+echo '##### Including config file in postgresql #####'
+
+
+echo  "include = 'pg_tune.conf'" >> /etc/postgresql/10/main/postgresql.conf
+echo ' '
+echo '###### Restarting postgres with new settings #####'
+echo ' '
+systemctl restart postgresql
+
+echo '##### Creating Database #####'
+echo ' '
+sudo -u postgres createdb unbench_the_kench >/dev/null 2>&1
+echo '##### Filling the database with junk #####'
+echo ' '
+sudo -u postgres pgbench -i -s 10 -p 5432 -d unbench_the_kench
+echo '##### Running benchmark against PG_tune #####'
+
+for i in {1..5}
+do
+sudo -u postgres pgbench unbench_the_kench -c 100 -T 3 -S -n >> result2.txt
+done
+
+grep -i processed result2.txt | awk '{printf "%s\n", $6}' > result_nums2.txt
+
+count2=0;
+sum2=0;
+
+for i in $( awk '{ printf "%s\n", $1 }' result_nums2.txt )
+           do
+                sum2=$(echo $sum2+$i | bc )
+                ((count2++))
+       done
+pg_bench=$(echo 'Average number of transactions processed from 15 iterations '&& echo "scale=2; $sum2 / $count2" | bc)
+
+sudo -u postgres dropdb unbench_the_kench >/dev/null 2>&1
+rm result2.txt result_nums2.txt
+rm /etc/postgresql/10/main/pg_tune.conf
+sed -i '$d' /etc/postgresql/10/main/postgresql.conf
+systemctl restart postgresql
+
+
+
 
 rm -rf /var/www/vhosts/trial.com
 rm -f /etc/apache/sites-enabled/trial.com.conf
@@ -241,5 +316,8 @@ ${default_apache}
 
 ##### Neds tuning results #####
 ${neds_tuning}
-EOF
 
+##### PG TUNE results #####
+${pg_bench}
+
+EOF
