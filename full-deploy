@@ -19,7 +19,7 @@ wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-
 sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -sc)-pgdg main" > /etc/apt/sources.list.d/PostgreSQL.list'
 apt update 
 apt -y upgrade
-apt -y install apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10 python-certbot-apache
+apt -y install apache2 'php7.2' php-mbstring php-curl php-tokenizer php-xmlrpc php-soap php-zip php-gd php-xml php-pgsql postgresql-10 python-certbot-apache php-intl
 mkdir -p /var/www/{backups,vhosts/$website/{httpdocs,logs,moodledata}}
 git clone -b MOODLE_36_STABLE git://git.moodle.org/moodle.git /var/www/vhosts/$website/httpdocs/
 systemctl start postgresql
